@@ -1,0 +1,17 @@
+{
+  "name": "recall-claude-plugin",
+  "owner": {
+    "name": "Jose Airosa",
+    "email": "me@joseairosa.com"
+  },
+  "plugins": [
+    {
+      "name": "recall",
+      "source": ".",
+      "description": "Persistent memory for Claude Code — captures decisions, patterns, and context automatically via hooks, restores it every session.",
+      "version": "1.13.1",
+      "category": "productivity",
+      "homepage": "https://recallmcp.com"
+    }
+  ]
+}
