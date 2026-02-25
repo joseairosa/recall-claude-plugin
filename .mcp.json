@@ -1,0 +1,9 @@
+{
+  "recall-remote": {
+    "type": "http",
+    "url": "https://recallmcp.com/mcp",
+    "headers": {
+      "Authorization": "Bearer ${RECALL_API_KEY}"
+    }
+  }
+}
