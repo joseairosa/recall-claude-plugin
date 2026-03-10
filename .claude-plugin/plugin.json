@@ -1,6 +1,6 @@
 {
   "name": "recall",
-  "version": "1.13.1",
+  "version": "1.15.17",
   "description": "Recall Memory-as-a-Service — persistent memory, semantic search, and context management across Claude Code sessions. Connects to recallmcp.com or self-hosted instances.",
   "author": {
     "name": "Jose Airosa",
@@ -8,7 +8,7 @@
     "url": "https://github.com/joseairosa"
   },
   "homepage": "https://recallmcp.com",
-  "repository": "https://github.com/joseairosa/recall-claude-plugin",
+  "repository": "https://github.com/joseairosa/recall",
   "license": "MIT",
   "keywords": ["memory", "recall", "mcp", "persistence", "semantic-search", "context", "rlm"]
 }

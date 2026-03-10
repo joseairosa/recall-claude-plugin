@@ -10,11 +10,21 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/compact-restore.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|Task|Bash",
+        "matcher": "Write|Edit|MultiEdit|Task|Bash|Read|Grep|Glob",
         "hooks": [
           {
             "type": "command",
@@ -37,6 +47,16 @@
       }
     ],
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-summarize.sh\"",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      },
       {
         "hooks": [
           {

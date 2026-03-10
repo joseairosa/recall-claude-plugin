@@ -1,27 +1,38 @@
-# Recall — Persistent Memory for Claude Code
+# Recall Plugin for Claude Code
 
-Give Claude Code a permanent memory store that survives every session restart and context compaction — automatically.
-
-Install the plugin once and four hooks capture context and restore it on every session, with zero prompting required.
+Persistent memory, semantic search, and context management across Claude Code sessions.
 
 ## Installation
 
-### From the Official Marketplace
+### From Marketplace
 
-```
-/plugin install recall@claude-plugins-official
+```bash
+/plugin install recall@marketplace-name
 ```
 
-### From Recall Marketplace
+### Manual (Local)
 
+```bash
+claude --plugin-dir /path/to/plugin/recall
 ```
-/plugin marketplace add joseairosa/recall-claude-plugin
-/plugin install recall@recall-claude-plugin
+
+Or copy to your plugins directory:
+
+```bash
+cp -r plugin/recall ~/.claude/plugins/recall
 ```
 
 ## Configuration
 
-Sign up at [recallmcp.com](https://recallmcp.com) and set your API key:
+Run the setup command after installing the plugin:
+
+```
+/recall:setup
+```
+
+This will prompt for your API key (found at https://recallmcp.com/dashboard/keys), save it to `~/.claude/recall/config.json`, and verify the connection.
+
+Alternatively, set your API key as an environment variable:
 
 ```bash
 export RECALL_API_KEY="sk-your-api-key-here"
@@ -59,13 +70,14 @@ Connects to the Recall MCP server at recallmcp.com (or self-hosted). Provides 16
 
 ### Commands (`commands/`)
 
+- `/setup` — configure your Recall API key and verify the connection
 - `/decompose` — decompose a large file or task using RLM
 - `/load-context` — load content into RLM memory for processing
 - `/rlm-status` — check status of active RLM execution chains
 
 ### Status Line (`scripts/statusline.sh`)
 
-Shows memory count, version info, and update availability. Add to `~/.claude/settings.json`:
+Shows memory count and version info. Add to `~/.claude/settings.json` manually:
 
 ```json
 {
@@ -77,21 +89,18 @@ Shows memory count, version info, and update availability. Add to `~/.claude/set
 }
 ```
 
-## Pricing
+## Migrating from MCP + Hooks Setup
 
-- **Free** — 100 memories, 1 workspace
-- **Pro** ($9/mo) — unlimited memories, workspaces, webhooks, priority support
-- **Team** & **Enterprise** plans available
+If you previously used Recall via the install script (`scripts/install.sh`):
 
-See [recallmcp.com/#pricing](https://recallmcp.com/#pricing) for details.
+1. Install this plugin
+2. Remove Recall hooks from `~/.claude/settings.json` (SessionStart, PostToolUse, PreCompact, Stop entries referencing `recall/hooks/`)
+3. Remove the statusLine entry (or update path to plugin location)
+4. Remove `~/.claude/recall/` directory
+5. Set `RECALL_API_KEY` environment variable
 
 ## Links
 
 - [recallmcp.com](https://recallmcp.com) — Cloud hosted service
-- [Documentation](https://recallmcp.com/dashboard/docs) — Full docs
-- [Changelog](https://recallmcp.com/#changelog) — Release history
-- [GitHub (open source)](https://github.com/joseairosa/recall) — Self-hosted server
-
-## License
-
-MIT
+- [GitHub](https://github.com/joseairosa/recall) — Open source repo
+- [Documentation](https://recallmcp.com/docs) — Full docs

@@ -21,6 +21,9 @@
 # Do NOT use set -e — this script must always produce output even on errors
 CONFIG_FILE="${HOME}/.claude/recall/config.json"
 STATE_FILE="${HOME}/.claude/recall/state.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IS_PLUGIN_INSTALL=false
+[[ "${SCRIPT_DIR}" == *"/plugins/"* ]] && IS_PLUGIN_INSTALL=true
 
 # --- Read stdin (JSON session data piped by Claude Code) ---
 if [ -t 0 ]; then
@@ -52,6 +55,20 @@ VERSION="${VERSION:-1.11.9}"
 PREV_CMD="${PREV_CMD:-}"
 API_KEY="${API_KEY:-}"
 SERVER_URL="${SERVER_URL:-}"
+
+# For plugin installs, plugin.json is the ground truth for the installed version.
+# config.json may be stale (only updated by install.sh, not the plugin updater).
+if "${IS_PLUGIN_INSTALL}"; then
+  _PLUGIN_JSON="${SCRIPT_DIR}/../.claude-plugin/plugin.json"
+  if [[ -f "${_PLUGIN_JSON}" ]]; then
+    if command -v python3 &>/dev/null; then
+      _pv="$(python3 -c "import json; d=json.load(open('${_PLUGIN_JSON}')); print(d.get('version',''),end='')" 2>/dev/null || true)"
+    elif command -v jq &>/dev/null; then
+      _pv="$(jq -r '.version // empty' "${_PLUGIN_JSON}" 2>/dev/null || true)"
+    fi
+    [[ -n "${_pv}" ]] && VERSION="${_pv}"
+  fi
+fi
 
 # --- Read activity state ---
 SESSION_MEMORIES=0
@@ -124,7 +141,7 @@ fi
 
 # Append update indicator if server version is newer than local
 if [[ -n "${LATEST_VERSION}" ]] && _version_newer "${LATEST_VERSION}" "${VERSION}"; then
-  RECALL_SEGMENT="${RECALL_SEGMENT} · ⬆ ${LATEST_VERSION}"
+  RECALL_SEGMENT="${RECALL_SEGMENT} · ⬆ ${LATEST_VERSION} — Restart Claude Code to update."
 fi
 
 # --- Collect previous command output (if configured) ---

@@ -12,12 +12,197 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Detect if running from a Claude Code plugin install vs curl|bash install.
+# Plugin: scripts live in ~/.claude/plugins/recall/scripts/
+# curl|bash: scripts live in ~/.claude/recall/hooks/
+IS_PLUGIN_INSTALL=false
+[[ "${SCRIPT_DIR}" == *"/plugins/"* ]] && IS_PLUGIN_INSTALL=true
+
+# ─── Install rules file (plugin mode only) ────────────────────────────────────
+# Copies plugin/recall/rules/recall.md → ~/.claude/rules/recall.md so Claude
+# always has Recall's always-on directives injected into every session.
+if "${IS_PLUGIN_INSTALL}"; then
+  _RULES_SRC="${SCRIPT_DIR}/../rules/recall.md"
+  _RULES_DST="${HOME}/.claude/rules/recall.md"
+  if [[ -f "${_RULES_SRC}" ]]; then
+    mkdir -p "${HOME}/.claude/rules" 2>/dev/null || true
+    cp "${_RULES_SRC}" "${_RULES_DST}" 2>/dev/null || true
+  fi
+fi
+
+# ─── Register observe hook in settings.json (plugin mode only) ───────────────
+# Claude Code does not auto-activate PostToolUse hooks defined in a plugin's
+# hooks.json — they must be present in ~/.claude/settings.json to fire.
+# This block is idempotent: it only adds the entry if it is not already there.
+if "${IS_PLUGIN_INSTALL}" && command -v python3 &>/dev/null; then
+  python3 - <<'PYEOF' 2>/dev/null || true
+import json, os
+
+settings_path = os.path.expanduser("~/.claude/settings.json")
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except Exception:
+    settings = {}
+
+for event in ("PostToolUse", "SessionStart", "PreCompact", "Stop"):
+    settings.setdefault("hooks", {}).setdefault(event, [])
+
+base = 'bash "${HOME}/.claude/plugins/recall/scripts/'
+
+def present(event, cmd):
+    return any(
+        any(h.get("command", "") == cmd for h in e.get("hooks", []))
+        for e in settings["hooks"][event]
+    )
+
+changed = False
+
+OBSERVE_MATCHER = "Write|Edit|MultiEdit|Task|Bash|Read|Grep|Glob"
+observe_cmd = base + 'observe.sh"'
+observe_ok = any(
+    e.get("matcher", "") == OBSERVE_MATCHER and
+    any(h.get("command", "") == observe_cmd for h in e.get("hooks", []))
+    for e in settings["hooks"]["PostToolUse"]
+)
+if not observe_ok:
+    settings["hooks"]["PostToolUse"] = [
+        e for e in settings["hooks"]["PostToolUse"]
+        if not any(h.get("command", "") == observe_cmd for h in e.get("hooks", []))
+    ]
+    settings["hooks"]["PostToolUse"].append({
+        "matcher": OBSERVE_MATCHER,
+        "hooks": [{"type": "command", "command": observe_cmd, "async": True, "timeout": 10}]
+    })
+    changed = True
+
+if not present("SessionStart", base + 'session-start.sh"'):
+    settings["hooks"]["SessionStart"].append({
+        "hooks": [{"type": "command", "command": base + 'session-start.sh"', "timeout": 15}]
+    })
+    changed = True
+
+if not present("SessionStart", base + 'compact-restore.sh"'):
+    settings["hooks"]["SessionStart"].append({
+        "matcher": "compact",
+        "hooks": [{"type": "command", "command": base + 'compact-restore.sh"', "timeout": 5}]
+    })
+    changed = True
+
+if not present("PreCompact", base + 'pre-compact.sh"'):
+    settings["hooks"]["PreCompact"].append({
+        "hooks": [{"type": "command", "command": base + 'pre-compact.sh"', "timeout": 15}]
+    })
+    changed = True
+
+if not present("Stop", base + 'session-end.sh"'):
+    settings["hooks"]["Stop"].append({
+        "hooks": [{"type": "command", "command": base + 'session-end.sh"', "async": True, "timeout": 10}]
+    })
+    changed = True
+
+if not present("Stop", base + 'stop-summarize.sh"'):
+    settings["hooks"]["Stop"].append({
+        "hooks": [{"type": "command", "command": base + 'stop-summarize.sh"', "async": True, "timeout": 10}]
+    })
+    changed = True
+
+if not present("Stop", base + 'stop.sh"'):
+    settings["hooks"]["Stop"].append({
+        "hooks": [{"type": "command", "command": base + 'stop.sh"', "timeout": 5}]
+    })
+    changed = True
+
+if changed:
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+PYEOF
+fi
+
 # Load config — silently exit if something goes wrong
 # shellcheck source=lib/config.sh
 source "${SCRIPT_DIR}/lib/config.sh" || exit 0
 
 # No API key — nothing to do
 [[ -z "${RECALL_API_KEY}" ]] && exit 0
+
+# ─── Auto-heal revoked API key ────────────────────────────────────────────────
+# The dashboard used to silently rotate keys, leaving config.json stale with a
+# revoked key. Every hook call would fail with 401. This block detects that and
+# automatically syncs the active key from ~/.claude.json (MCP config) so hooks
+# resume working without any user intervention.
+_DEBUG_LOG="${HOME}/.claude/recall/debug.log"
+_heal_status="$(curl --silent --max-time 5 --output /dev/null \
+  --write-out "%{http_code}" \
+  --request GET \
+  --header "Authorization: Bearer ${RECALL_API_KEY}" \
+  "${RECALL_SERVER_URL}/api/memories?limit=1" 2>/dev/null || echo "000")"
+
+if [[ "${_heal_status}" == "401" ]]; then
+  _new_key=""
+  _claude_json="${HOME}/.claude.json"
+
+  # Scan ~/.claude.json for any MCP server with "recall" in the name that has
+  # a Bearer token in its headers — that's the active key for this account.
+  if [[ -f "${_claude_json}" ]]; then
+    if command -v python3 &>/dev/null; then
+      _new_key="$(python3 - <<'HEAL_PY' 2>/dev/null || true
+import json, os
+try:
+    d = json.load(open(os.path.expanduser("~/.claude.json")))
+    for name, srv in d.get("mcpServers", {}).items():
+        if "recall" in name.lower():
+            auth = srv.get("headers", {}).get("Authorization", "")
+            if auth.startswith("Bearer sk-"):
+                print(auth.split(" ", 1)[1])
+                break
+except Exception:
+    pass
+HEAL_PY
+)"
+    elif command -v jq &>/dev/null; then
+      _new_key="$(jq -r '
+        .mcpServers
+        | to_entries[]
+        | select(.key | ascii_downcase | contains("recall"))
+        | .value.headers.Authorization // empty
+      ' "${_claude_json}" 2>/dev/null | sed 's/^Bearer //' | head -1 || true)"
+    fi
+  fi
+
+  if [[ -n "${_new_key}" && "${_new_key}" != "${RECALL_API_KEY}" ]]; then
+    # Verify the candidate key is actually valid before saving
+    _verify_status="$(curl --silent --max-time 5 --output /dev/null \
+      --write-out "%{http_code}" \
+      --request GET \
+      --header "Authorization: Bearer ${_new_key}" \
+      "${RECALL_SERVER_URL}/api/memories?limit=1" 2>/dev/null || echo "000")"
+
+    if [[ "${_verify_status}" != "401" ]]; then
+      _config_file="${HOME}/.claude/recall/config.json"
+      RECALL_NEW_KEY="${_new_key}" python3 - <<'UPDATE_PY' 2>/dev/null || true
+import json, os
+cfg_path = os.path.expanduser("~/.claude/recall/config.json")
+try:
+    cfg = json.load(open(cfg_path))
+except Exception:
+    cfg = {}
+cfg["api_key"] = os.environ["RECALL_NEW_KEY"]
+json.dump(cfg, open(cfg_path, "w"), indent=2)
+UPDATE_PY
+      # Update in-memory key so the rest of this session uses the healed key
+      export RECALL_API_KEY="${_new_key}"
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [session-start] auto-healed: revoked key replaced from .claude.json" \
+        >> "${_DEBUG_LOG}" 2>/dev/null || true
+    else
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [session-start] warning: key revoked, candidate from .claude.json also invalid — hooks disabled" \
+        >> "${_DEBUG_LOG}" 2>/dev/null || true
+    fi
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [session-start] warning: key revoked, no replacement found in .claude.json — hooks disabled" \
+      >> "${_DEBUG_LOG}" 2>/dev/null || true
+  fi
+fi
 
 # ─── Pure-bash semver comparison: returns 0 if $1 is strictly newer than $2 ──
 _recall_version_newer() {
@@ -47,25 +232,52 @@ if [[ -f "${CONFIG_FILE}" ]]; then
 fi
 INSTALLED_VERSION="${INSTALLED_VERSION:-1.0.0}"
 
+# For plugin installs, plugin.json is the ground truth for the installed version.
+# config.json may not exist (user never ran install.sh) so it would default to 1.0.0.
+# Self-heal: if the running script is newer than plugin.json (e.g. background update
+# downloaded new scripts but plugin.json write failed), update plugin.json immediately
+# so version detection is always accurate. SCRIPT_VERSION must match every release.
+SCRIPT_VERSION="1.15.17"
+if "${IS_PLUGIN_INSTALL}"; then
+  _PLUGIN_JSON="${SCRIPT_DIR}/../.claude-plugin/plugin.json"
+  if [[ -f "${_PLUGIN_JSON}" ]]; then
+    if command -v python3 &>/dev/null; then
+      _pv="$(python3 -c "import json; d=json.load(open('${_PLUGIN_JSON}')); print(d.get('version',''))" 2>/dev/null || true)"
+    elif command -v jq &>/dev/null; then
+      _pv="$(jq -r '.version // empty' "${_PLUGIN_JSON}" 2>/dev/null || true)"
+    fi
+    [[ -n "${_pv}" ]] && INSTALLED_VERSION="${_pv}"
+    # Self-heal: update plugin.json if the running script is newer than what it records
+    if _recall_version_newer "${SCRIPT_VERSION}" "${INSTALLED_VERSION}"; then
+      if command -v python3 &>/dev/null; then
+        _NV="${SCRIPT_VERSION}" _PJ="${_PLUGIN_JSON}" python3 -c "
+import json, os
+pj = os.environ['_PJ']; v = os.environ['_NV']
+try:
+    d = json.load(open(pj)); d['version'] = v; json.dump(d, open(pj, 'w'), indent=2)
+except Exception: pass
+" 2>/dev/null || true
+      elif command -v jq &>/dev/null; then
+        _tmp="$(jq --arg v "${SCRIPT_VERSION}" '.version = $v' "${_PLUGIN_JSON}" 2>/dev/null || true)"
+        [[ -n "${_tmp}" ]] && echo "${_tmp}" > "${_PLUGIN_JSON}" || true
+      fi
+      INSTALLED_VERSION="${SCRIPT_VERSION}"
+    fi
+  fi
+fi
+
 # ─── State file (shared with observe.sh) ─────────────────────────────────────
 STATE_FILE="${HOME}/.claude/recall/state.json"
 
-# ─── Daily update check (once per 24h, synchronous, 2s timeout) ──────────────
-# Runs FIRST so a newly detected version can trigger auto-update in the same session.
-LAST_CHECK=0
-if [[ -f "${STATE_FILE}" ]]; then
-  if command -v jq &>/dev/null; then
-    LAST_CHECK="$(jq -r '.last_update_check // 0' "${STATE_FILE}" 2>/dev/null || echo 0)"
-  elif command -v python3 &>/dev/null; then
-    LAST_CHECK="$(python3 -c "import json; d=json.load(open('${STATE_FILE}')); print(d.get('last_update_check',0))" 2>/dev/null || echo 0)"
-  fi
-fi
-LAST_CHECK="${LAST_CHECK:-0}"
+# ─── Update check (every session, synchronous, 2s timeout) ───────────────────
+# Runs on every session start so updates are picked up immediately after deploy.
+# The 2s max-time is the only throttle needed — if the server is unreachable the
+# check is a no-op and the session continues normally.
 NOW_EPOCH="$(date +%s 2>/dev/null || echo 0)"
 
 REMOTE_VERSION=""
 REMOTE_CHANGELOG=""
-if (( NOW_EPOCH - LAST_CHECK > 86400 )); then
+if true; then
   REMOTE_JSON="$(curl --silent --max-time 2 --fail "${RECALL_SERVER_URL}/hooks/version?since=${INSTALLED_VERSION}" 2>/dev/null || true)"
   # Parse version and changelog only when we got a response
   if [[ -n "${REMOTE_JSON}" ]]; then
@@ -130,6 +342,7 @@ json.dump(d, open(sf, 'w'))
 fi
 
 # ─── Read auto_update preference from config.json (default: true) ────────────
+# Env var RECALL_AUTO_UPDATE=false takes precedence over config.json.
 AUTO_UPDATE="true"
 if [[ -f "${CONFIG_FILE}" ]]; then
   if command -v jq &>/dev/null; then
@@ -140,6 +353,8 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     [[ "${_au}" == "False" || "${_au}" == "false" ]] && AUTO_UPDATE="false"
   fi
 fi
+# Env var override — takes precedence over config.json
+[[ "${RECALL_AUTO_UPDATE:-}" == "false" ]] && AUTO_UPDATE="false"
 
 # ─── Auto-update if a newer version was detected ─────────────────────────────
 # REMOTE_VERSION is set above when the daily check ran and found a new version.
@@ -161,9 +376,60 @@ if [[ -n "${AVAILABLE_VERSION}" ]] && _recall_version_newer "${AVAILABLE_VERSION
     echo "${REMOTE_CHANGELOG}" | while IFS= read -r line; do echo ">$line"; done
   fi
   echo ">"
-  if [[ "${AUTO_UPDATE}" == "false" ]]; then
-    echo "> Auto-update is disabled. To update manually:"
-    echo ">   curl -fsSL ${RECALL_SERVER_URL}/install-hooks | bash -s -- --api-key \${RECALL_API_KEY}"
+  if "${IS_PLUGIN_INSTALL}"; then
+    if [[ "${AUTO_UPDATE}" == "false" ]]; then
+      echo "> Auto-update is disabled. To update manually:"
+      echo ">   /plugin install recall"
+    else
+      # Plugin mode: download updated scripts directly into SCRIPT_DIR in the background.
+      # This makes plugin updates seamless — no user action required beyond restarting.
+      UPDATE_LOG="${HOME}/.claude/recall/update.log"
+      _PLUGIN_JSON="${SCRIPT_DIR}/../.claude-plugin/plugin.json"
+      _NEW_VERSION="${AVAILABLE_VERSION}"
+      (
+        _ok=true
+        for _sf in session-start.sh observe.sh statusline.sh stop.sh stop-summarize.sh pre-compact.sh compact-restore.sh session-end.sh; do
+          curl -fsSL --max-time 10 "${RECALL_SERVER_URL}/hooks/file/${_sf}" \
+            -o "${SCRIPT_DIR}/${_sf}" 2>/dev/null \
+            && chmod +x "${SCRIPT_DIR}/${_sf}" 2>/dev/null \
+            || { _ok=false; break; }
+        done
+        if "${_ok}"; then
+          mkdir -p "${SCRIPT_DIR}/lib"
+          curl -fsSL --max-time 10 "${RECALL_SERVER_URL}/hooks/file/lib/config.sh" \
+            -o "${SCRIPT_DIR}/lib/config.sh" 2>/dev/null \
+            && chmod +x "${SCRIPT_DIR}/lib/config.sh" 2>/dev/null \
+            || _ok=false
+        fi
+        # Download rules file (markdown, no chmod needed; failure is non-fatal)
+        if "${_ok}"; then
+          mkdir -p "${SCRIPT_DIR}/../rules" 2>/dev/null || true
+          curl -fsSL --max-time 10 "${RECALL_SERVER_URL}/hooks/file/rules/recall.md" \
+            -o "${SCRIPT_DIR}/../rules/recall.md" 2>/dev/null || true
+        fi
+        if "${_ok}" && [[ -f "${_PLUGIN_JSON}" ]]; then
+          if command -v python3 &>/dev/null; then
+            _NV="${_NEW_VERSION}" _PJ="${_PLUGIN_JSON}" python3 -c "
+import json, os
+pj = os.environ['_PJ']; v = os.environ['_NV']
+try:
+    d = json.load(open(pj)); d['version'] = v; json.dump(d, open(pj, 'w'), indent=2)
+except Exception: pass
+" 2>/dev/null || true
+          elif command -v jq &>/dev/null; then
+            _tmp="$(jq --arg v "${_NEW_VERSION}" '.version = $v' "${_PLUGIN_JSON}" 2>/dev/null || true)"
+            [[ -n "${_tmp}" ]] && echo "${_tmp}" > "${_PLUGIN_JSON}" || true
+          fi
+        fi
+      ) > "${UPDATE_LOG}" 2>&1 &
+      disown $! 2>/dev/null || true
+      echo "> Updating in background — restart Claude Code once complete."
+      echo "> To disable auto-update: set RECALL_AUTO_UPDATE=false in your shell profile"
+      echo ">   or set auto_update: false in ~/.claude/recall/config.json"
+    fi
+  elif [[ "${AUTO_UPDATE}" == "false" ]]; then
+    echo "> Auto-update is disabled. To update manually, run: /recall-update"
+    echo ">   or: curl -fsSL ${RECALL_SERVER_URL}/install-hooks | bash -s -- --api-key \${RECALL_API_KEY}"
   else
     # Auto-update hooks in the background so the hook completes within its timeout.
     # install.sh is idempotent and safe to re-run.
@@ -174,7 +440,8 @@ if [[ -n "${AVAILABLE_VERSION}" ]] && _recall_version_newer "${AVAILABLE_VERSION
     ) > "${UPDATE_LOG}" 2>&1 &
     disown $! 2>/dev/null || true
     echo "> Updating in background — restart Claude Code once complete."
-    echo "> To disable auto-update: set auto_update: false in ~/.claude/recall/config.json"
+    echo "> To disable auto-update: set RECALL_AUTO_UPDATE=false in your shell profile"
+    echo ">   or set auto_update: false in ~/.claude/recall/config.json"
   fi
   echo ""
 fi
