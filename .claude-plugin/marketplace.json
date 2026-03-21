@@ -9,7 +9,7 @@
       "name": "recall",
       "source": "./",
       "description": "Persistent memory for Claude Code \u2014 captures decisions, patterns, and context automatically via hooks, restores it every session.",
-      "version": "1.15.17",
+      "version": "1.15.18",
       "category": "productivity",
       "homepage": "https://recallmcp.com"
     }
