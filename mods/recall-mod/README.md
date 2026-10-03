@@ -54,11 +54,11 @@ On this Mac, with a scratch home, a fake key and a closed local port (no network
 
 The mod starts no process. Each observation is one HTTPS request from Claude Code's own process, sent on the timer, not on the tool's path.
 
-## Found on the way (today's scripts)
+## Risk to keep in mind
 
-- `observe.sh` sends `X-Recall-Git-Remote` as git has it. A remote with `user:token@` in it goes to Recall as it is. The mod removes it.
-- `observe.sh` files under `pwd`. A session in a worktree files under the worktree, not the main checkout that `rules/recall.md` names. The mod uses the main working tree.
-- `session-start.sh` downloads new scripts from recallmcp.com and runs them. A mod is code inside Claude Code with the user's permissions, so a Recall mod must update only through the plugin marketplace, never download its own code.
+`session-start.sh` (1.17.3) downloads new scripts from recallmcp.com and runs them from the next session on, with no checksum or signature. A mod is code inside Claude Code with the user's permissions, so a Recall mod must update only through the plugin marketplace, never download its own code. For the scripts, pinned hashes or signed releases would close the gap.
+
+The installed 1.17.3 already files a worktree under its main checkout and removes `user:token@` from the remote (`lib/config.sh`). This repo's copy (1.16.2) predates that; the mod does the same as 1.17.3.
 
 ## Limits
 
