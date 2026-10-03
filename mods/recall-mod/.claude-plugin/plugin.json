@@ -1,0 +1,13 @@
+{
+  "name": "recall-mod",
+  "version": "0.1.0",
+  "description": "Prototype: Recall as a Claude Code mod. Observes tool calls in process, re-confirms the workspace and retries a Recall call that failed on it, and shows Recall's activity above the prompt. Load with claude --plugin-dir only.",
+  "author": {
+    "name": "Jose Airosa",
+    "email": "me@joseairosa.com",
+    "url": "https://github.com/joseairosa"
+  },
+  "homepage": "https://recallmcp.com",
+  "repository": "https://github.com/joseairosa/recall-claude-plugin",
+  "license": "MIT"
+}
